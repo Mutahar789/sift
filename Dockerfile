@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         perl \
         ca-certificates \
         curl \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
