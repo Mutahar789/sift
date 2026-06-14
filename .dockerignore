@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.cache/
+.DS_Store
+.git/
+.gitignore
+.venv/
+venv/
+
+databases/*.db
+databases/*.bib
+databases/*.bib.gz
+
+DEPLOY.md

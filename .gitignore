@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.cache/
+.DS_Store
+.venv/
+venv/
+
+databases/*.db
+databases/*.bib
+databases/*.bib.gz
+!databases/.gitkeep
