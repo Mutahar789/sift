@@ -1,5 +1,10 @@
 # Deploy Sift to Railway
 
+Sift does not include or require API keys on the server. Each visitor brings
+their own free [Semantic Scholar](https://semanticscholar.org/product/api) and
+[OpenAlex](https://openalex.org/settings/api) keys in the sidebar (both
+optional but recommended).
+
 ## One-time prep
 
 ```bash
@@ -21,20 +26,19 @@ railway link                  # link this folder to the project
 railway up                    # first build & deploy
 ```
 
-Then in the Railway dashboard:
+In the Railway dashboard:
 
-1. **Variables → New Variable**
-   - `S2_API_KEY = s2k-...`
-   - `OPENALEX_KEY = ...`
-   - `PORT = 8080` (auto-set, but explicit doesn't hurt)
-2. **Volumes → New Volume**
+1. **Volumes → New Volume**
    - mount path: `/data`
    - size: 5 GB (DBLP ~2.5 GB, ACL ~60 MB, headroom)
-3. **Settings → Networking → Generate Domain** for a `*.up.railway.app` URL to test, then add your custom domain (CNAME → the Railway target it gives you).
+2. **Settings → Networking → Generate Domain** for a `*.up.railway.app` URL to
+   test, then add your custom domain (CNAME → the Railway target it gives you).
+
+No environment variables required.
 
 ## Populate the DBLP / ACL databases on the volume
 
-The volume is empty on first deploy. Slate runs fine without it (slower, more
+The volume is empty on first deploy. Sift runs fine without it (slower, more
 "not_found" from online rate limits). To populate:
 
 ```bash
@@ -63,8 +67,8 @@ git push
 ```bash
 docker build -t sift .
 docker run -p 8080:8080 \
-   -e S2_API_KEY=... -e OPENALEX_KEY=... \
    -v ~/.local/share/hallucinator:/data \
    sift
 # Open http://localhost:8080
+# Paste your S2 + OpenAlex keys in the sidebar.
 ```

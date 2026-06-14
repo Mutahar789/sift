@@ -45,23 +45,18 @@ def sidebar():
                      "paper versions. Upload two zips, get a `diff.pdf`.")
 
         st.markdown("---")
-        st.markdown("### Backends")
-        default_s2 = st.session_state.get("s2_key",
-                                            os.environ.get("S2_API_KEY", ""))
-        default_oa = st.session_state.get("openalex_key",
-                                            os.environ.get("OPENALEX_KEY", ""))
-        s2 = st.text_input("Semantic Scholar API key", value=default_s2 or "",
-                            help="Cross-check for DBLP gaps. "
+        st.markdown("### Your API keys")
+        st.caption("Both are free. Without them, refs are slower and more may "
+                    "show up as not_found.")
+        s2 = st.text_input("Semantic Scholar API key",
+                            value=st.session_state.get("s2_key", ""),
+                            help="Free, requires approval. "
                                   "semanticscholar.org/product/api")
-        oa = st.text_input("OpenAlex API key", value=default_oa or "",
-                            help="First-line cross-check. openalex.org/settings/api")
+        oa = st.text_input("OpenAlex API key",
+                            value=st.session_state.get("openalex_key", ""),
+                            help="Free, instant. openalex.org/settings/api")
         st.session_state["s2_key"] = s2
         st.session_state["openalex_key"] = oa
-        st.caption(
-            f"Cross-check: "
-            f"{'✅ OpenAlex' if oa else '⚠️ OpenAlex no-key'}, "
-            f"{'✅ Semantic Scholar' if s2 else '❌ Semantic Scholar (no key)'}"
-        )
 
         st.caption(_db_status("DBLP", find_dblp()))
         st.caption(_db_status("ACL", find_acl()))
