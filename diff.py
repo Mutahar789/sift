@@ -17,7 +17,6 @@ import subprocess
 import tempfile
 import threading
 import time
-import uuid
 import zipfile
 from collections import deque
 from pathlib import Path
@@ -343,7 +342,11 @@ def _reap_stale_jobs(max_age_secs: int = _JOB_MAX_AGE_SECS) -> None:
     cutoff = time.time() - max_age_secs
     for job in ROOT.glob("job-*"):
         try:
-            if job.is_dir() and job.stat().st_mtime < cutoff:
+            if not job.is_dir():
+                continue
+            newest = max((p.stat().st_mtime for p in job.rglob("*")),
+                         default=job.stat().st_mtime)
+            if newest < cutoff:
                 shutil.rmtree(job, ignore_errors=True)
         except OSError:
             pass
@@ -361,7 +364,8 @@ def run_diff(old_zip: bytes, new_zip: bytes, *,
 
     _reap_stale_jobs()
 
-    workdir = ROOT / f"job-{uuid.uuid4().hex[:10]}"
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix="job-", dir=ROOT))
     old_only = workdir / "_old"
     new_only = workdir / "_new"
     build = workdir / "build"

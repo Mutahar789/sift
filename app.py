@@ -315,6 +315,9 @@ def diff_tab():
                 st.session_state["dx-job-log"] = log_lines
                 st.session_state["dx-job-status"] = "error"
                 status.update(label="Failed.", state="error", expanded=True)
+            finally:
+                st.session_state.pop("dx-job-old", None)
+                st.session_state.pop("dx-job-new", None)
 
     if st.session_state.get("dx-job-status") == "error":
         e = st.session_state["dx-job-error"]
