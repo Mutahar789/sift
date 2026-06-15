@@ -5,6 +5,7 @@ import datetime as _dt
 import hashlib
 import os
 import sys
+import tempfile
 import uuid
 from collections import deque
 from pathlib import Path
@@ -118,7 +119,7 @@ def refcheck_tab():
         return
 
     if st.session_state.get("rc-job-status") == "running":
-        tmp = Path(f"/tmp/slate-rc-{uuid.uuid4().hex[:8]}.pdf")
+        tmp = Path(tempfile.gettempdir()) / f"sift-rc-{uuid.uuid4().hex[:8]}.pdf"
         tmp.write_bytes(pdf.getvalue())
 
         with st.status("Validating references…", expanded=True) as status:
@@ -176,6 +177,8 @@ def refcheck_tab():
                 st.session_state["rc-job-error"] = str(e)
                 st.session_state["rc-job-status"] = "error"
                 status.update(label="Failed.", state="error", expanded=True)
+            finally:
+                tmp.unlink(missing_ok=True)
 
     if st.session_state.get("rc-job-status") == "error":
         st.error(f"❌ {st.session_state['rc-job-error']}")
@@ -312,6 +315,9 @@ def diff_tab():
                 st.session_state["dx-job-log"] = log_lines
                 st.session_state["dx-job-status"] = "error"
                 status.update(label="Failed.", state="error", expanded=True)
+            finally:
+                st.session_state.pop("dx-job-old", None)
+                st.session_state.pop("dx-job-new", None)
 
     if st.session_state.get("dx-job-status") == "error":
         e = st.session_state["dx-job-error"]
@@ -323,26 +329,24 @@ def diff_tab():
 
     if st.session_state.get("dx-job-status") == "done":
         result = st.session_state["dx-job-result"]
-        pdf_path = Path(result["diff_pdf"])
-        tex_path = Path(result["diff_tex"])
+        pdf_bytes = result["pdf_bytes"]
+        tex_bytes = result["tex_bytes"]
 
-        st.success(f"diff.pdf ready ({pdf_path.stat().st_size/1024:.0f} KB).")
+        st.success(f"diff.pdf ready ({len(pdf_bytes)/1024:.0f} KB).")
 
         c1, c2 = st.columns(2)
-        with open(pdf_path, "rb") as f:
-            c1.download_button("Download diff.pdf", f.read(),
-                                file_name="diff.pdf", mime="application/pdf",
-                                use_container_width=True)
-        with open(tex_path, "rb") as f:
-            c2.download_button("Download diff.tex", f.read(),
-                                file_name="diff.tex", mime="text/x-tex",
-                                use_container_width=True)
+        c1.download_button("Download diff.pdf", pdf_bytes,
+                            file_name="diff.pdf", mime="application/pdf",
+                            use_container_width=True)
+        c2.download_button("Download diff.tex", tex_bytes,
+                            file_name="diff.tex", mime="text/x-tex",
+                            use_container_width=True)
 
         st.markdown("---")
-        _preview(pdf_path)
+        _preview(pdf_bytes)
 
 
-def _preview(pdf_path: Path, max_pages: int = 25, scale: float = 1.4):
+def _preview(pdf_bytes: bytes, max_pages: int = 25, scale: float = 1.4):
     try:
         import pypdfium2 as pdfium
     except ImportError:
@@ -350,7 +354,7 @@ def _preview(pdf_path: Path, max_pages: int = 25, scale: float = 1.4):
                  "(or download above).")
         return
     try:
-        doc = pdfium.PdfDocument(str(pdf_path))
+        doc = pdfium.PdfDocument(pdf_bytes)
     except Exception as e:
         st.warning(f"Could not open PDF for preview: {e}")
         return

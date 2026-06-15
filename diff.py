@@ -14,15 +14,15 @@ import shutil
 import signal
 import stat
 import subprocess
+import tempfile
 import threading
 import time
-import uuid
 import zipfile
 from collections import deque
 from pathlib import Path
 from typing import Callable
 
-ROOT = Path("/tmp") / "slate-diff"
+ROOT = Path(tempfile.gettempdir()) / "sift-diff"
 LATEXDIFF_TIMEOUT = 180
 PDFLATEX_TIMEOUT = 120
 _SEM = threading.Semaphore(2)
@@ -333,6 +333,25 @@ def _emit(cb, ev):
         pass
 
 
+_JOB_MAX_AGE_SECS = 3600
+
+
+def _reap_stale_jobs(max_age_secs: int = _JOB_MAX_AGE_SECS) -> None:
+    if not ROOT.exists():
+        return
+    cutoff = time.time() - max_age_secs
+    for job in ROOT.glob("job-*"):
+        try:
+            if not job.is_dir():
+                continue
+            newest = max((p.stat().st_mtime for p in job.rglob("*")),
+                         default=job.stat().st_mtime)
+            if newest < cutoff:
+                shutil.rmtree(job, ignore_errors=True)
+        except OSError:
+            pass
+
+
 # ---------- main entry ----------
 
 def run_diff(old_zip: bytes, new_zip: bytes, *,
@@ -343,95 +362,102 @@ def run_diff(old_zip: bytes, new_zip: bytes, *,
     if add_color not in ADD_COLORS or del_color not in DEL_COLORS:
         raise ValueError("invalid color")
 
-    workdir = ROOT / f"job-{uuid.uuid4().hex[:10]}"
+    _reap_stale_jobs()
+
+    ROOT.mkdir(mode=0o700, parents=True, exist_ok=True)
+    workdir = Path(tempfile.mkdtemp(prefix="job-", dir=ROOT))
     old_only = workdir / "_old"
     new_only = workdir / "_new"
     build = workdir / "build"
     for d in (old_only, new_only, build):
         d.mkdir(parents=True, exist_ok=True)
 
-    _emit(progress, {"kind": "stage", "stage": "extract",
-                     "message": "extracting zips"})
-    _extract(old_zip, old_only)
-    _extract(new_zip, new_only)
+    try:
+        _emit(progress, {"kind": "stage", "stage": "extract",
+                         "message": "extracting zips"})
+        _extract(old_zip, old_only)
+        _extract(new_zip, new_only)
 
-    old_main = _find_main(old_only)
-    new_main = _find_main(new_only)
-    if not old_main:
-        raise DiffError("Old zip: no main.tex found.")
-    if not new_main:
-        raise DiffError("New zip: no main.tex found.")
+        old_main = _find_main(old_only)
+        new_main = _find_main(new_only)
+        if not old_main:
+            raise DiffError("Old zip: no main.tex found.")
+        if not new_main:
+            raise DiffError("New zip: no main.tex found.")
 
-    # Union into build/ at main.tex's level. OLD first so its .sty/.cls/.bib
-    # survive even if NEW dropped them; NEW overrides on conflicts.
-    shutil.copytree(old_main.parent, build, dirs_exist_ok=True, symlinks=False)
-    shutil.copytree(new_main.parent, build, dirs_exist_ok=True, symlinks=False)
-    _merge_bibs(old_main.parent, new_main.parent, build)
+        # Union into build/ at main.tex's level. OLD first so its .sty/.cls/.bib
+        # survive even if NEW dropped them; NEW overrides on conflicts.
+        shutil.copytree(old_main.parent, build, dirs_exist_ok=True, symlinks=False)
+        shutil.copytree(new_main.parent, build, dirs_exist_ok=True, symlinks=False)
+        _merge_bibs(old_main.parent, new_main.parent, build)
 
-    _emit(progress, {"kind": "stage", "stage": "harvest_old",
-                     "message": "harvesting OLD's cite/ref numbers"})
-    old_numbers = _harvest_old_numbers(old_main.parent, build)
+        _emit(progress, {"kind": "stage", "stage": "harvest_old",
+                         "message": "harvesting OLD's cite/ref numbers"})
+        old_numbers = _harvest_old_numbers(old_main.parent, build)
 
-    _emit(progress, {"kind": "stage", "stage": "latexdiff",
-                     "message": f"diff {old_main.name} (old) → {new_main.name} (new)"})
-    proc = subprocess.run(
-        ["latexdiff", "--flatten",
-         "--exclude-textcmd=section,subsection,subsubsection",
-         "--config=PICTUREENV=(?:picture|DIFnomarkup|tabular|tabularx|threeparttable)[\\w\\d*@]*",
-         str(old_main.resolve()), str(new_main.resolve())],
-        capture_output=True, text=True, timeout=LATEXDIFF_TIMEOUT,
-    )
-    if proc.returncode != 0:
-        raise DiffError("latexdiff failed.", log_tail=(proc.stderr or "")[-1500:])
+        _emit(progress, {"kind": "stage", "stage": "latexdiff",
+                         "message": f"diff {old_main.name} (old) → {new_main.name} (new)"})
+        proc = subprocess.run(
+            ["latexdiff", "--flatten",
+             "--exclude-textcmd=section,subsection,subsubsection",
+             "--config=PICTUREENV=(?:picture|DIFnomarkup|tabular|tabularx|threeparttable)[\\w\\d*@]*",
+             str(old_main.resolve()), str(new_main.resolve())],
+            capture_output=True, text=True, timeout=LATEXDIFF_TIMEOUT,
+        )
+        if proc.returncode != 0:
+            raise DiffError("latexdiff failed.", log_tail=(proc.stderr or "")[-1500:])
 
-    diff_tex = build / "diff.tex"
+        diff_tex = build / "diff.tex"
 
-    def _compile(strike: bool) -> tuple[bool, deque]:
-        diff_tex.write_text(
-            _post_process(proc.stdout, add_color=add_color, del_color=del_color,
-                           strikethrough=strike, old_numbers=old_numbers),
-            encoding="utf-8")
-        for ext in (".aux", ".bbl", ".blg", ".log", ".out", ".toc"):
-            (build / f"diff{ext}").unlink(missing_ok=True)
-        tail: deque = deque(maxlen=400)
-        pdf = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
-                "-file-line-error", "diff.tex"]
-        for stage, cmd, timeout in [
-            ("pdflatex-1", pdf, PDFLATEX_TIMEOUT),
-            ("bibtex",     ["bibtex", "diff"], 60),
-            ("pdflatex-2", pdf, PDFLATEX_TIMEOUT),
-            ("pdflatex-3", pdf, PDFLATEX_TIMEOUT),
-        ]:
-            _emit(progress, {"kind": "stage", "stage": stage,
-                             "message": f"running {stage}"})
-            rc = _run(cmd, build, timeout, progress, stage, tail)
-            if rc != 0:
-                if stage == "bibtex":
-                    _emit(progress, {"kind": "warning",
-                                     "message": "bibtex failed; bibliography may be empty"})
-                    continue
-                return False, tail
-        return True, tail
+        def _compile(strike: bool) -> tuple[bool, deque]:
+            diff_tex.write_text(
+                _post_process(proc.stdout, add_color=add_color, del_color=del_color,
+                               strikethrough=strike, old_numbers=old_numbers),
+                encoding="utf-8")
+            for ext in (".aux", ".bbl", ".blg", ".log", ".out", ".toc"):
+                (build / f"diff{ext}").unlink(missing_ok=True)
+            tail: deque = deque(maxlen=400)
+            pdf = ["pdflatex", "-interaction=nonstopmode", "-halt-on-error",
+                    "-file-line-error", "diff.tex"]
+            for stage, cmd, timeout in [
+                ("pdflatex-1", pdf, PDFLATEX_TIMEOUT),
+                ("bibtex",     ["bibtex", "diff"], 60),
+                ("pdflatex-2", pdf, PDFLATEX_TIMEOUT),
+                ("pdflatex-3", pdf, PDFLATEX_TIMEOUT),
+            ]:
+                _emit(progress, {"kind": "stage", "stage": stage,
+                                 "message": f"running {stage}"})
+                rc = _run(cmd, build, timeout, progress, stage, tail)
+                if rc != 0:
+                    if stage == "bibtex":
+                        _emit(progress, {"kind": "warning",
+                                         "message": "bibtex failed; bibliography may be empty"})
+                        continue
+                    return False, tail
+            return True, tail
 
-    # Strikethrough first; on failure retry without (a few package combos
-    # can break \sout in odd captions).
-    with _SEM:
-        ok, tail = _compile(strikethrough)
-        if not ok and strikethrough:
-            _emit(progress, {"kind": "warning",
-                             "message": "compile failed with strikethrough — "
-                                         "retrying without"})
-            ok, tail = _compile(False)
-            if ok:
-                strikethrough = False
-        if not ok:
-            raise DiffError("pdflatex failed even after strikethrough fallback.",
-                             log_tail="\n".join(list(tail)[-50:]))
+        # Strikethrough first; on failure retry without (a few package combos
+        # can break \sout in odd captions).
+        with _SEM:
+            ok, tail = _compile(strikethrough)
+            if not ok and strikethrough:
+                _emit(progress, {"kind": "warning",
+                                 "message": "compile failed with strikethrough — "
+                                             "retrying without"})
+                ok, tail = _compile(False)
+                if ok:
+                    strikethrough = False
+            if not ok:
+                raise DiffError("pdflatex failed even after strikethrough fallback.",
+                                 log_tail="\n".join(list(tail)[-50:]))
 
-    diff_pdf = build / "diff.pdf"
-    if not diff_pdf.is_file():
-        raise DiffError("Compile finished but diff.pdf was not produced.",
-                         log_tail="\n".join(list(tail)[-40:]))
+        diff_pdf = build / "diff.pdf"
+        if not diff_pdf.is_file():
+            raise DiffError("Compile finished but diff.pdf was not produced.",
+                             log_tail="\n".join(list(tail)[-40:]))
 
-    return {"diff_pdf": str(diff_pdf), "diff_tex": str(diff_tex),
-            "workdir": str(workdir), "strikethrough_used": strikethrough}
+        return {"pdf_bytes": diff_pdf.read_bytes(),
+                "tex_bytes": diff_tex.read_bytes(),
+                "strikethrough_used": strikethrough}
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
